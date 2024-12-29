@@ -142,110 +142,77 @@ class LlamaClient:
             logger.error(f"Error processing text: {str(e)}")
             raise
 
-    async def extract_check_info(self, image_path: Path) -> Dict:
-        """Extract information from a check image."""
-        # Read and encode the image
-        with open(image_path, "rb") as img_file:
-            image_data = base64.b64encode(img_file.read()).decode()
-        
-        prompt = """Analyze this check image and extract ALL of the following information:
+    async def extract_check_info(self, image_path: Path) -> Optional[Dict]:
+        """Extract information from a check image using the Llama API."""
+        if not image_path.exists():
+            logger.error(f"Image file not found: {image_path}")
+            return None
 
-1. Check number:
-   - Look in the TOP RIGHT corner of the check
-   - This is usually a 3-4 digit number
-   - Do NOT use the account number from the bottom MICR line
-   - Do NOT use any routing numbers
-   - Only return the actual check number from top right
+        with open(image_path, "rb") as f:
+            image_bytes = f.read()
+            image_base64 = base64.b64encode(image_bytes).decode()
 
-2. Amount:
-   - Look for both numerical and written form
-   - Use the numerical amount in dollars and cents
+        prompt = """You are a check processing assistant. Your task is to analyze this check image and extract key information.
 
-3. Date:
-   - Usually in top right area
-   - Format as MM/DD/YYYY
+IMPORTANT: You must return ONLY a raw JSON object. Do not include any explanatory text, markdown formatting, or backticks.
 
-4. Payee:
-   - Look for "Pay to the order of"
-   - Get the full payee name
-
-5. From/Drawer:
-   - Look in top left corner
-   - Get the full name(s)
-   - May include multiple names (e.g. "John and Jane Smith")
-
-6. From Address:
-   - Look in top left corner below the name
-   - Get complete address if present
-
-7. Memo:
-   - Look in bottom left corner
-   - May be blank
-
-8. Bank Name:
-   - Usually prominently displayed at top
-
-Return ONLY a valid JSON object with these exact fields (no markdown, no other text):
+Example of correct response format:
 {
-    "check_number": "string - ONLY the 3-4 digit check number from top right",
-    "amount": "string - format as $X,XXX.XX",
-    "date": "string - format as MM/DD/YYYY",
-    "payee": "string - full payee name",
-    "from": "string - name who wrote check",
-    "from_address": "string - address or empty string",
-    "memo": "string - memo text or empty string",
-    "bank_name": "string - name of bank"
-}"""
+    "check_number": "1234",
+    "amount": "$5,490.00",
+    "date": "10/01/2024",
+    "payee": "The Mapleton",
+    "from": "John Smith",
+    "from_address": "123 Main St",
+    "memo": "For rent",
+    "bank_name": "Bank of America"
+}
+
+Look in these specific locations:
+1. Check number: TOP RIGHT corner (3-4 digit number, NOT account/routing numbers)
+2. Amount: Numerical amount in dollars and cents
+3. Date: Top right area (MM/DD/YYYY format)
+4. Payee: After "Pay to the order of"
+5. From: Top left corner name(s)
+6. From Address: Top left corner below name
+7. Memo: Bottom left corner
+8. Bank Name: Top of check
+
+CRITICAL: Your response must be ONLY the JSON object. No other text. No explanations. No markdown."""
 
         try:
             response = await self._make_request("api/generate", data={
                 "model": self.vision_model,
-                "stream": False,
                 "prompt": prompt,
-                "images": [image_data]
+                "images": [image_base64],
+                "stream": False,
+                "options": {
+                    "temperature": 0.2,
+                    "num_predict": 1024
+                }
             })
+
+            if not response or not response.get('response'):
+                return None
+
+            # Try to extract just the JSON part
+            response_text = response['response']
             
-            response_text = response.get('response', '')
-            logger.debug(f"Raw response: {response_text}")
-            
-            # Try to extract JSON from the response
+            # Try to find JSON object in the response
             try:
-                # First try direct JSON parsing
-                try:
-                    return json.loads(response_text)
-                except json.JSONDecodeError:
-                    pass
-                
-                # Try to find JSON-like content
-                matches = re.findall(r'\{[^}]+\}', response_text.replace('\n', ' '))
-                for match in matches:
-                    try:
-                        result = json.loads(match)
-                        # Validate it has the expected fields
-                        required_fields = ['check_number', 'amount', 'date', 'payee', 'from']
-                        if all(field in result for field in required_fields):
-                            return result
-                    except json.JSONDecodeError:
-                        continue
-                
-                # If we get here, try to parse markdown-style response
-                data = {}
-                for line in response_text.split('\n'):
-                    line = line.strip('* ')
-                    if ':' in line:
-                        key, value = line.split(':', 1)
-                        key = key.strip().lower().replace(' ', '_')
-                        value = value.strip()
-                        if key in ['check_number', 'amount', 'date', 'payee', 'from', 'from_address', 'memo', 'bank_name']:
-                            data[key] = value
-                
-                if data and all(k in data for k in ['check_number', 'amount', 'date', 'payee', 'from']):
-                    return data
-                
-                return {}
-            except Exception as e:
-                logger.error(f"Failed to parse response: {str(e)}")
-                return {}
+                # Find the first { and last }
+                start = response_text.find('{')
+                end = response_text.rfind('}')
+                if start != -1 and end != -1:
+                    json_str = response_text[start:end+1]
+                    return json.loads(json_str)
+                else:
+                    logger.error("No JSON object found in response")
+                    return None
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON from response: {e}")
+                return None
+
         except Exception as e:
-            logger.error(f"Error analyzing image {image_path}: {str(e)}")
-            raise
+            logger.error(f"Error calling Llama API: {e}")
+            return None

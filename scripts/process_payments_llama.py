@@ -10,6 +10,7 @@ import re
 import fitz
 import random
 from Levenshtein import distance as Levenshtein_distance
+from typing import Optional, Dict
 
 # Add project root to path
 project_root = str(Path(__file__).parent.parent)
@@ -46,25 +47,39 @@ logger.addHandler(file_handler)
 
 logger.info(f"Detailed logs will be written to: {log_file}")
 
-async def analyze_check_image(pdf_path: str) -> dict:
-    """
-    Analyze a check image and extract relevant information using the LlamaClient API.
-    """
+async def convert_pdf_to_png(pdf_path: str, dpi: int = 300) -> str:
+    """Convert first page of PDF to PNG with specified DPI."""
     try:
         # Convert first page of PDF to PNG
         doc = fitz.open(pdf_path)
         page = doc[0]
         
-        # Convert to PNG
-        pix = page.get_pixmap()
+        # Set matrix for higher resolution
+        zoom = dpi / 72  # Default DPI is 72
+        matrix = fitz.Matrix(zoom, zoom)
+        
+        # Convert to PNG with higher resolution
+        pix = page.get_pixmap(matrix=matrix)
         png_path = pdf_path.replace('.pdf', '.png')
         pix.save(png_path)
         logger.info(f"Saved check image as PNG: {png_path}")
         
         doc.close()
+        return png_path
         
+    except Exception as e:
+        logger.error(f"Error converting PDF to PNG {pdf_path}: {str(e)}")
+        return None
+
+async def analyze_check_image(pdf_path: str, png_path: str) -> dict:
+    """
+    Analyze a check image and extract relevant information using the LlamaClient API.
+    """
+    try:
         # Call LlamaClient API
         check_data = await llama_client.extract_check_info(Path(png_path))
+        if not check_data:
+            return None
         
         # Add file paths to result
         check_data['pdf_path'] = pdf_path
@@ -75,36 +90,99 @@ async def analyze_check_image(pdf_path: str) -> dict:
         logger.error(f"Error analyzing check image {pdf_path}: {str(e)}")
         return None
 
+async def analyze_check_with_consensus(check_file: str, num_attempts: int = 2) -> Optional[Dict]:
+    """Analyze a check multiple times and use consensus."""
+    # First convert PDF to PNG once
+    png_path = await convert_pdf_to_png(check_file)
+    if not png_path:
+        return None
+    
+    results = []
+    for i in range(num_attempts):
+        logger.info(f"Attempt {i+1} analyzing check: {os.path.basename(check_file)}")
+        result = await analyze_check_image(check_file, png_path)
+        if result:
+            results.append(result)
+    
+    if not results:
+        logger.warning(f"No valid results from {num_attempts} attempts")
+        return None
+        
+    # If all results are identical, use that
+    if all(result == results[0] for result in results):
+        logger.info("All attempts returned identical results")
+        return results[0]
+        
+    # If we have different results, try two more times
+    if num_attempts == 2:
+        logger.info("Results differ, trying two more times")
+        for i in range(2):
+            logger.info(f"Additional attempt {i+1} analyzing check: {os.path.basename(check_file)}")
+            result = await analyze_check_image(check_file, png_path)
+            if result:
+                results.append(result)
+    
+    # Take the most common result for each field
+    consensus = {}
+    required_fields = ['check_number', 'amount', 'date', 'payee', 'from', 'from_address', 'memo', 'bank_name']
+    
+    for field in required_fields:
+        values = [result.get(field) for result in results if result.get(field)]
+        if values:
+            # Get most common value
+            from collections import Counter
+            value_counts = Counter(values)
+            consensus[field] = value_counts.most_common(1)[0][0]
+    
+    # Ensure we have all required fields
+    if all(field in consensus for field in ['check_number', 'amount', 'date', 'payee', 'from']):
+        logger.info("Generated consensus from multiple attempts")
+        return consensus
+    
+    logger.warning("Could not reach consensus on all required fields")
+    return None
+
 def normalize_name(name: str) -> str:
     """Normalize a name for comparison"""
-    # Remove room numbers and common titles
-    name = re.sub(r'\s+\d+\s*$', '', name)
-    name = re.sub(r'^(Mr\.|Mrs\.|Ms\.|Dr\.)\s+', '', name, flags=re.IGNORECASE)
+    if not name:
+        return ''
+        
+    # Remove unit numbers (e.g. "Kurt Elliott 413" -> "Kurt Elliott")
+    name = re.sub(r'\s+\d+$', '', name)
     
     # Convert to lowercase and remove punctuation
     name = name.lower()
     name = re.sub(r'[^\w\s]', '', name)
     
-    # Remove extra whitespace
-    name = ' '.join(name.split())
+    # Sort words to handle different name orders
+    words = name.split()
+    words.sort()
     
-    return name
+    return ' '.join(words)
 
 def name_similarity(name1: str, name2: str) -> float:
     """Calculate similarity between two names"""
     try:
+        if not name1 or not name2:
+            return 0.0
+            
+        # Normalize both names
         name1 = normalize_name(name1)
         name2 = normalize_name(name2)
         
-        # Use Levenshtein distance for fuzzy matching
-        max_len = max(len(name1), len(name2))
-        if max_len == 0:
+        # Split into words
+        words1 = set(name1.split())
+        words2 = set(name2.split())
+        
+        # Calculate word overlap
+        common_words = words1.intersection(words2)
+        total_words = words1.union(words2)
+        
+        if not total_words:
             return 0.0
             
-        distance = Levenshtein_distance(name1, name2)
-        similarity = 1 - (distance / max_len)
-        
-        return similarity
+        # Score based on word overlap
+        return len(common_words) / len(total_words)
         
     except Exception as e:
         logger.error(f"Error calculating name similarity: {str(e)}")
@@ -152,196 +230,97 @@ def get_date_score(date1_str: str, date2_str: str) -> float:
         logger.error(f"Error calculating date score: {str(e)}")
         return 0.0
 
-def is_match(check: dict, invoice: dict) -> bool:
+def is_match(check: dict, invoice: dict) -> float:
     """Determine if a check matches an invoice"""
     try:
-        # Get normalized amounts
+        # Convert amounts to float for comparison
         check_amount = normalize_amount(check['amount'])
         invoice_amount = normalize_amount(invoice['amount'])
         
-        # Check if amounts are within 5% of each other
+        # Calculate amount similarity (0-1)
         amount_diff = abs(check_amount - invoice_amount)
-        amount_threshold = invoice_amount * 0.05
-        amount_matches = amount_diff <= amount_threshold
+        amount_score = 1.0 if amount_diff == 0 else max(0, 1.0 - (amount_diff / max(check_amount, invoice_amount)))
         
-        # Compare names with fuzzy matching
-        name_score = name_similarity(check['payee'], invoice['payee'])
-        name_matches = name_score >= 0.6
-        
-        # Compare dates
+        # Calculate date similarity (0-1)
         date_score = get_date_score(check['date'], invoice['date'])
-        date_matches = date_score >= 0.3
         
-        logger.debug(f"Match scores for check {check['check_number']} and invoice {invoice['invoice_number']}:")
-        logger.debug(f"Amount match: {amount_matches} (diff: {amount_diff}, threshold: {amount_threshold})")
-        logger.debug(f"Name match: {name_matches} (score: {name_score})")
-        logger.debug(f"Date match: {date_matches} (score: {date_score})")
+        # Calculate name similarity (0-1)
+        from_name = normalize_name(check['from'])
+        resident_name = normalize_name(invoice['resident_name'])
+        name_score = name_similarity(from_name, resident_name)
         
-        # Return True if all criteria match
-        return amount_matches and name_matches and date_matches
+        # Calculate payee similarity (0-1)
+        check_payee = normalize_name(check['payee'])
+        invoice_payee = normalize_name(invoice['payee'])
+        payee_score = name_similarity(check_payee, invoice_payee)
+        
+        # Weight the scores (adjust weights as needed)
+        amount_weight = 0.4  # Amount is very important
+        date_weight = 0.2   # Date is somewhat important
+        name_weight = 0.3   # From name is important
+        payee_weight = 0.1  # Payee is less important since it's often just "The Mapleton"
+        
+        total_score = (
+            amount_score * amount_weight +
+            date_score * date_weight +
+            name_score * name_weight +
+            payee_score * payee_weight
+        )
+        
+        return total_score
         
     except Exception as e:
-        logger.error(f"Error checking match: {str(e)}")
-        return False
+        logger.error(f"Error comparing check and invoice: {str(e)}")
+        return 0.0
 
 def match_checks_with_invoices(checks: list, invoices: list) -> tuple:
     """
     Match checks with invoices using fuzzy matching
     Returns (matches, unmatched_checks, unmatched_invoices)
     """
-    matches = []
-    unmatched_checks = []
-    matched_invoice_ids = set()
-    
-    # Try to match each check
-    for check in checks:
-        found_match = False
-        best_match = None
-        best_score = 0
-        
-        for invoice in invoices:
-            if invoice['invoice_number'] in matched_invoice_ids:
-                continue
-                
-            # Calculate match scores
-            amount_score = 0
-            check_amount = normalize_amount(check['amount'])
-            invoice_amount = normalize_amount(invoice['amount'])
-            amount_diff = abs(check_amount - invoice_amount)
-            amount_threshold = invoice_amount * 0.05
-            if amount_diff <= amount_threshold:
-                amount_score = 1 - (amount_diff / amount_threshold)
-            
-            name_score = name_similarity(check['payee'], invoice['payee'])
-            date_score = get_date_score(check['date'], invoice['date'])
-            
-            # Calculate weighted score
-            overall_score = (amount_score * 0.5) + (name_score * 0.3) + (date_score * 0.2)
-            
-            # Log scores for debugging
-            logger.debug(f"Check {check['check_number']} vs Invoice {invoice['invoice_number']}:")
-            logger.debug(f"Amount score: {amount_score:.2f} (check: ${check_amount:.2f}, invoice: ${invoice_amount:.2f})")
-            logger.debug(f"Name score: {name_score:.2f} (check: {check['payee']}, invoice: {invoice['payee']})")
-            logger.debug(f"Date score: {date_score:.2f} (check: {check['date']}, invoice: {invoice['date']})")
-            logger.debug(f"Overall score: {overall_score:.2f}")
-            
-            if overall_score > best_score:
-                best_score = overall_score
-                best_match = invoice
-                found_match = True
-        
-        if found_match and best_match and best_score >= 0.6:
-            matches.append({
-                'check': check,
-                'invoice': best_match,
-                'match_score': best_score
-            })
-            matched_invoice_ids.add(best_match['invoice_number'])
-            logger.info(f"Matched check #{check['check_number']} with invoice {best_match['invoice_number']} (score: {best_score:.2f})")
-        else:
-            unmatched_checks.append(check)
-            logger.warning(f"No match found for check #{check['check_number']} (best score: {best_score:.2f})")
-    
-    # Get unmatched invoices
-    unmatched_invoices = [inv for inv in invoices if inv['invoice_number'] not in matched_invoice_ids]
-    
-    logger.info(f"Matching complete: {len(matches)} matches, {len(unmatched_checks)} unmatched checks, {len(unmatched_invoices)} unmatched invoices")
-    
-    return matches, unmatched_checks, unmatched_invoices
-
-async def process_input_folder(folder_path: str):
-    """Process all files in the input folder"""
     try:
-        # Process check images
-        check_data = []
-        check_files = glob.glob(os.path.join(folder_path, '*.pdf'))
+        matches = []
+        unmatched_checks = []
+        matched_invoice_ids = set()
         
-        for check_file in check_files:
-            logger.info(f"Processing check: {os.path.basename(check_file)}")
-            check_result = await analyze_check_image(check_file)
-            if check_result:
-                check_data.append(check_result)
+        # Sort checks by amount for better matching
+        checks = sorted(checks, key=lambda x: normalize_amount(x['amount']))
+        invoices = sorted(invoices, key=lambda x: normalize_amount(x['amount']))
         
-        # Load billing data
-        billing_file = os.path.join(folder_path, 'billing_download_20241228.json')
-        logger.info(f"Using Knack billing data from: billing_download_20241228.json")
-        with open(billing_file, 'r') as f:
-            raw_billing_data = json.load(f)
+        # Try to match each check
+        for check in checks:
+            best_match = None
+            best_score = 0.0
+            best_invoice = None
             
-        # Convert billing data to our format
-        billing_data = []
-        for invoice in raw_billing_data:
-            try:
-                # Extract amount from field_1411 (total amount)
-                amount = float(invoice.get('field_1411_raw', 0))
-                
-                # Extract payee from field_1350 (removing HTML tags)
-                raw_payee = invoice.get('field_1350', '')
-                payee = re.sub(r'<[^>]+>', '', raw_payee)
-                
-                # Extract resident name from field_1350_raw
-                resident_name = ''
-                if invoice.get('field_1350_raw'):
-                    raw_data = invoice['field_1350_raw']
-                    if isinstance(raw_data, list) and len(raw_data) > 0:
-                        resident_name = raw_data[0].get('identifier', '')
-                
-                # Get invoice date from field_1351
-                invoice_date = invoice.get('field_1351', '')
-                if not invoice_date and invoice.get('field_1351_raw'):
-                    invoice_date = invoice['field_1351_raw'].get('date', '')
-                
-                # Get invoice number from field_1418
-                invoice_number = invoice.get('field_1418', '')
-                
-                billing_data.append({
-                    'invoice_number': invoice_number,
-                    'amount': f"${amount:,.2f}",
-                    'date': invoice_date,
-                    'payee': payee,
-                    'resident_name': resident_name,
-                    'raw_payee': raw_payee
+            for invoice in invoices:
+                if invoice['invoice_number'] not in matched_invoice_ids:
+                    score = is_match(check, invoice)
+                    if score > best_score:
+                        best_score = score
+                        best_invoice = invoice
+            
+            # If we found a good match (score > 0.7)
+            if best_score >= 0.7 and best_invoice:
+                matches.append({
+                    'check': check,
+                    'invoice': best_invoice,
+                    'match_score': best_score
                 })
-            except (ValueError, KeyError) as e:
-                logger.warning(f"Error processing invoice {invoice.get('field_1418', 'N/A')}: {str(e)}")
-                continue
+                matched_invoice_ids.add(best_invoice['invoice_number'])
+            else:
+                logger.warning(f"No match found for check #{check['check_number']} (best score: {best_score:.2f})")
+                unmatched_checks.append(check)
         
-        # Save parsed data for debugging
-        debug_file = os.path.join(folder_path, 'parsed_data_debug.json')
-        with open(debug_file, 'w') as f:
-            json.dump({
-                'check_data': check_data,
-                'invoice_data': billing_data
-            }, f, indent=2)
-        logger.info(f"Saved parsed data for debugging to: {debug_file}")
+        # Get unmatched invoices
+        unmatched_invoices = [inv for inv in invoices if inv['invoice_number'] not in matched_invoice_ids]
         
-        # Load bank statement data
-        bank_file = os.path.join(folder_path, 'stmt.csv')
-        logger.info(f"Using bank data from: stmt.csv")
+        logger.info(f"Matching complete: {len(matches)} matches, {len(unmatched_checks)} unmatched checks, {len(unmatched_invoices)} unmatched invoices")
         
-        # Match checks with invoices
-        logger.info("Starting match with Python logic...")
-        try:
-            matches, unmatched_checks, unmatched_invoices = match_checks_with_invoices(check_data, billing_data)
-            
-            # Save matches for review
-            matches_file = os.path.join(folder_path, 'matches.json')
-            with open(matches_file, 'w') as f:
-                json.dump({
-                    'matched_payments': matches,
-                    'unmatched_checks': unmatched_checks,
-                    'unmatched_invoices': unmatched_invoices
-                }, f, indent=2)
-            logger.info(f"Saved matches to: {matches_file}")
-            
-            return matches
-            
-        except Exception as e:
-            logger.error(f"Error matching checks with invoices: {str(e)}")
-            raise
+        return matches, unmatched_checks, unmatched_invoices
         
     except Exception as e:
-        logger.error(f"Error processing input folder: {str(e)}")
+        logger.error(f"Error matching checks with invoices: {str(e)}")
         raise
 
 def get_input_folder():
@@ -471,6 +450,107 @@ async def show_matching_gui(check, potential_matches):
     except Exception as e:
         logger.error(f"Error showing matching GUI: {str(e)}")
         return None
+
+async def process_input_folder(folder_path: str):
+    """Process all files in the input folder"""
+    try:
+        # Process check images
+        check_data = []
+        check_files = glob.glob(os.path.join(folder_path, '*.pdf'))
+        
+        for check_file in check_files:
+            logger.info(f"Processing check: {os.path.basename(check_file)}")
+            check_result = await analyze_check_with_consensus(check_file)
+            if check_result and isinstance(check_result, dict) and 'amount' in check_result:
+                check_data.append(check_result)
+            else:
+                logger.warning(f"Failed to extract valid data from {check_file}")
+        
+        if not check_data:
+            logger.error("No valid check data was extracted")
+            return None
+        
+        # Load billing data
+        billing_file = os.path.join(folder_path, 'billing_download_20241228.json')
+        logger.info(f"Using Knack billing data from: billing_download_20241228.json")
+        with open(billing_file, 'r') as f:
+            raw_billing_data = json.load(f)
+            
+        # Convert billing data to our format
+        billing_data = []
+        for invoice in raw_billing_data:
+            try:
+                # Extract amount from field_1411 (total amount)
+                amount = float(invoice.get('field_1411_raw', 0))
+                
+                # Extract payee from field_1350 (removing HTML tags)
+                raw_payee = invoice.get('field_1350', '')
+                payee = re.sub(r'<[^>]+>', '', raw_payee)
+                
+                # Extract resident name from field_1350_raw
+                resident_name = ''
+                if invoice.get('field_1350_raw'):
+                    raw_data = invoice['field_1350_raw']
+                    if isinstance(raw_data, list) and len(raw_data) > 0:
+                        resident_name = raw_data[0].get('identifier', '')
+                
+                # Get invoice date from field_1351
+                invoice_date = invoice.get('field_1351', '')
+                if not invoice_date and invoice.get('field_1351_raw'):
+                    invoice_date = invoice['field_1351_raw'].get('date', '')
+                
+                # Get invoice number from field_1418
+                invoice_number = invoice.get('field_1418', '')
+                
+                billing_data.append({
+                    'invoice_number': invoice_number,
+                    'amount': f"${amount:,.2f}",
+                    'date': invoice_date,
+                    'payee': payee,
+                    'resident_name': resident_name,
+                    'raw_payee': raw_payee
+                })
+            except (ValueError, KeyError) as e:
+                logger.warning(f"Error processing invoice {invoice.get('field_1418', 'N/A')}: {str(e)}")
+                continue
+        
+        # Save parsed data for debugging
+        debug_file = os.path.join(folder_path, 'parsed_data_debug.json')
+        with open(debug_file, 'w') as f:
+            json.dump({
+                'check_data': check_data,
+                'invoice_data': billing_data
+            }, f, indent=2)
+        logger.info(f"Saved parsed data for debugging to: {debug_file}")
+        
+        # Load bank statement data
+        bank_file = os.path.join(folder_path, 'stmt.csv')
+        logger.info(f"Using bank data from: stmt.csv")
+        
+        # Match checks with invoices
+        logger.info("Starting match with Python logic...")
+        try:
+            matches, unmatched_checks, unmatched_invoices = match_checks_with_invoices(check_data, billing_data)
+            
+            # Save matches for review
+            matches_file = os.path.join(folder_path, 'matches.json')
+            with open(matches_file, 'w') as f:
+                json.dump({
+                    'matched_payments': matches,
+                    'unmatched_checks': unmatched_checks,
+                    'unmatched_invoices': unmatched_invoices
+                }, f, indent=2)
+            logger.info(f"Saved matches to: {matches_file}")
+            
+            return matches
+            
+        except Exception as e:
+            logger.error(f"Error matching checks with invoices: {str(e)}")
+            raise
+        
+    except Exception as e:
+        logger.error(f"Error processing input folder: {str(e)}")
+        raise
 
 async def main():
     """Main function to process payments"""
