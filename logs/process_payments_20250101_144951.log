@@ -1,0 +1,17 @@
+2025-01-01 14:49:51,099 - INFO - Detailed logs will be written to: c:\code\KnackBillingMatch\logs\process_payments_20250101_144951.log
+2025-01-01 14:49:56,873 - INFO - Saved check image as PNG: C:/Users/aaron/Downloads/payment_matching_20241228\44.png
+2025-01-01 14:49:57,116 - INFO - Saved check image as PNG: C:/Users/aaron/Downloads/payment_matching_20241228\44.png
+2025-01-01 14:49:57,117 - INFO - Attempt 1 analyzing check: 44.pdf
+2025-01-01 14:49:58,620 - INFO - Attempt 2 analyzing check: 44.pdf
+2025-01-01 14:50:00,024 - INFO - Results differ, trying two more times
+2025-01-01 14:50:00,025 - INFO - Additional attempt 1 analyzing check: 44.pdf
+2025-01-01 14:50:01,417 - INFO - Additional attempt 2 analyzing check: 44.pdf
+2025-01-01 14:50:02,804 - INFO - Generated consensus from multiple attempts
+2025-01-01 14:50:03,039 - INFO - Saved check image as PNG: C:/Users/aaron/Downloads/payment_matching_20241228\45.png
+2025-01-01 14:50:03,274 - INFO - Saved check image as PNG: C:/Users/aaron/Downloads/payment_matching_20241228\45.png
+2025-01-01 14:50:03,275 - INFO - Attempt 1 analyzing check: 45.pdf
+2025-01-01 14:50:04,841 - INFO - Attempt 2 analyzing check: 45.pdf
+2025-01-01 14:50:06,349 - INFO - Results differ, trying two more times
+2025-01-01 14:50:06,349 - INFO - Additional attempt 1 analyzing check: 45.pdf
+2025-01-01 14:50:07,824 - INFO - Additional attempt 2 analyzing check: 45.pdf
+2025-01-01 14:50:09,340 - INFO - Generated consensus from multiple attempts

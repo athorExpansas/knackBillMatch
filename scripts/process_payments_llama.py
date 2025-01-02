@@ -2,23 +2,24 @@ import os
 import sys
 import json
 import logging
-import datetime
 import asyncio
 from pathlib import Path
 import glob
 import re
-import fitz
+import fitz  # PyMuPDF
 import random
 from Levenshtein import distance as Levenshtein_distance
 from typing import Optional, Dict
+import tkinter as tk
+from tkinter import filedialog
+from datetime import datetime
+from difflib import SequenceMatcher
 
 # Add project root to path
 project_root = str(Path(__file__).parent.parent)
 sys.path.append(project_root)
 
 from src.llama_client import LlamaClient
-import tkinter as tk
-from tkinter import filedialog
 
 # Initialize Llama client
 try:
@@ -38,7 +39,7 @@ logger = logging.getLogger(__name__)
 # Add file handler
 log_dir = os.path.join(project_root, 'logs')
 os.makedirs(log_dir, exist_ok=True)
-timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 log_file = os.path.join(log_dir, f'process_payments_{timestamp}.log')
 file_handler = logging.FileHandler(log_file)
 file_handler.setLevel(logging.INFO)
@@ -50,6 +51,15 @@ logger.info(f"Detailed logs will be written to: {log_file}")
 async def convert_pdf_to_png(pdf_path: str, dpi: int = 300) -> str:
     """Convert first page of PDF to PNG with specified DPI."""
     try:
+        # Get directory and filename from pdf_path
+        dir_path = os.path.dirname(pdf_path)
+        base_name = os.path.splitext(os.path.basename(pdf_path))[0]
+        png_path = os.path.join(dir_path, f"{base_name}.png")
+        
+        print(f"Converting PDF to PNG:")
+        print(f"  PDF path: {pdf_path}")
+        print(f"  PNG path: {png_path}")
+        
         # Convert first page of PDF to PNG
         doc = fitz.open(pdf_path)
         page = doc[0]
@@ -60,15 +70,17 @@ async def convert_pdf_to_png(pdf_path: str, dpi: int = 300) -> str:
         
         # Convert to PNG with higher resolution
         pix = page.get_pixmap(matrix=matrix)
-        png_path = pdf_path.replace('.pdf', '.png')
         pix.save(png_path)
+        print(f"  Saved PNG file: {os.path.getsize(png_path)} bytes")
         logger.info(f"Saved check image as PNG: {png_path}")
         
         doc.close()
         return png_path
         
     except Exception as e:
-        logger.error(f"Error converting PDF to PNG {pdf_path}: {str(e)}")
+        error_msg = f"Error converting PDF to PNG {pdf_path}: {str(e)}"
+        print(f"  ERROR: {error_msg}")
+        logger.error(error_msg)
         return None
 
 async def analyze_check_image(pdf_path: str, png_path: str) -> dict:
@@ -204,8 +216,8 @@ def get_date_score(date1_str: str, date2_str: str) -> float:
         if not date1_str or not date2_str:
             return 0.0
             
-        date1 = datetime.datetime.strptime(date1_str, '%m/%d/%Y')
-        date2 = datetime.datetime.strptime(date2_str, '%m/%d/%Y')
+        date1 = datetime.strptime(date1_str, '%m/%d/%Y')
+        date2 = datetime.strptime(date2_str, '%m/%d/%Y')
         
         # Calculate days difference
         days_diff = abs((date2 - date1).days)
@@ -278,50 +290,78 @@ def match_checks_with_invoices(checks: list, invoices: list) -> tuple:
     Match checks with invoices using fuzzy matching
     Returns (matches, unmatched_checks, unmatched_invoices)
     """
-    try:
-        matches = []
-        unmatched_checks = []
-        matched_invoice_ids = set()
-        
-        # Sort checks by amount for better matching
-        checks = sorted(checks, key=lambda x: normalize_amount(x['amount']))
-        invoices = sorted(invoices, key=lambda x: normalize_amount(x['amount']))
-        
-        # Try to match each check
-        for check in checks:
-            best_match = None
-            best_score = 0.0
-            best_invoice = None
+    # Convert Knack billing data to our format
+    formatted_invoices = []
+    for invoice in invoices:
+        try:
+            # Extract amount from field_1411 (total amount)
+            amount = float(invoice.get('field_1411_raw', 0))
             
-            for invoice in invoices:
-                if invoice['invoice_number'] not in matched_invoice_ids:
-                    score = is_match(check, invoice)
-                    if score > best_score:
-                        best_score = score
-                        best_invoice = invoice
+            # Extract payee from field_1350 (removing HTML tags)
+            raw_payee = invoice.get('field_1350', '')
+            payee = re.sub(r'<[^>]+>', '', raw_payee)
             
-            # If we found a good match (score > 0.7)
-            if best_score >= 0.7 and best_invoice:
-                matches.append({
+            # Extract resident name from field_1350_raw
+            resident_name = ''
+            if invoice.get('field_1350_raw'):
+                raw_data = invoice['field_1350_raw']
+                if isinstance(raw_data, list) and len(raw_data) > 0:
+                    resident_name = raw_data[0].get('identifier', '')
+            
+            # Get invoice date from field_1351
+            invoice_date = invoice.get('field_1351', '')
+            if not invoice_date and invoice.get('field_1351_raw'):
+                invoice_date = invoice['field_1351_raw'].get('date', '')
+            
+            # Get invoice number from field_1418
+            invoice_number = invoice.get('field_1418', '')
+            
+            formatted_invoices.append({
+                'invoice_number': invoice_number,
+                'amount': f"${amount:,.2f}",
+                'date': invoice_date,
+                'payee': payee,
+                'resident_name': resident_name,
+                'raw_payee': raw_payee,
+                'original_data': invoice  # Keep original data for reference
+            })
+        except (ValueError, KeyError) as e:
+            logger.warning(f"Error processing invoice {invoice.get('field_1418', 'N/A')}: {str(e)}")
+            continue
+
+    # For each check, find all potential matches sorted by score
+    matches = []
+    unmatched_checks = []
+    matched_invoices = set()
+    
+    for check in checks:
+        # Get match scores for all invoices
+        scored_matches = []
+        for invoice in formatted_invoices:
+            score = is_match(check, invoice)
+            if score > 0.3:  # Only consider matches with at least 30% confidence
+                scored_matches.append({
                     'check': check,
-                    'invoice': best_invoice,
-                    'match_score': best_score
+                    'invoice': invoice,
+                    'confidence': score
                 })
-                matched_invoice_ids.add(best_invoice['invoice_number'])
-            else:
-                logger.warning(f"No match found for check #{check['check_number']} (best score: {best_score:.2f})")
-                unmatched_checks.append(check)
         
-        # Get unmatched invoices
-        unmatched_invoices = [inv for inv in invoices if inv['invoice_number'] not in matched_invoice_ids]
-        
-        logger.info(f"Matching complete: {len(matches)} matches, {len(unmatched_checks)} unmatched checks, {len(unmatched_invoices)} unmatched invoices")
-        
-        return matches, unmatched_checks, unmatched_invoices
-        
-    except Exception as e:
-        logger.error(f"Error matching checks with invoices: {str(e)}")
-        raise
+        if scored_matches:
+            # Sort by confidence score
+            scored_matches.sort(key=lambda x: x['confidence'], reverse=True)
+            matches.append(scored_matches)
+        else:
+            unmatched_checks.append(check)
+            
+        # Track which invoices were matched
+        for match in scored_matches:
+            matched_invoices.add(match['invoice']['invoice_number'])
+    
+    # Find unmatched invoices
+    unmatched_invoices = [inv for inv in formatted_invoices 
+                         if inv['invoice_number'] not in matched_invoices]
+    
+    return matches, unmatched_checks, unmatched_invoices
 
 def get_input_folder():
     """Get input folder from user."""
@@ -451,106 +491,44 @@ async def show_matching_gui(check, potential_matches):
         logger.error(f"Error showing matching GUI: {str(e)}")
         return None
 
-async def process_input_folder(folder_path: str):
+async def process_input_folder(folder_path: str) -> tuple:
     """Process all files in the input folder"""
-    try:
-        # Process check images
-        check_data = []
-        check_files = glob.glob(os.path.join(folder_path, '*.pdf'))
+    print(f"\nProcessing files in folder: {folder_path}")
+    pdf_files = [f for f in os.listdir(folder_path) if f.endswith('.pdf')]
+    print(f"Found PDF files: {pdf_files}")
+    check_data = []
+    
+    for pdf_file in pdf_files:
+        pdf_path = os.path.join(folder_path, pdf_file)
+        print(f"\nProcessing PDF: {pdf_path}")
         
-        for check_file in check_files:
-            logger.info(f"Processing check: {os.path.basename(check_file)}")
-            check_result = await analyze_check_with_consensus(check_file)
-            if check_result and isinstance(check_result, dict) and 'amount' in check_result:
-                check_data.append(check_result)
-            else:
-                logger.warning(f"Failed to extract valid data from {check_file}")
+        # Extract check number from filename
+        check_number = os.path.splitext(pdf_file)[0]
         
-        if not check_data:
-            logger.error("No valid check data was extracted")
-            return None
+        # Convert to PNG and analyze
+        png_path = os.path.join(folder_path, f"{check_number}.png")
+        print(f"Will save PNG to: {png_path}")
+        await convert_pdf_to_png(pdf_path)
         
-        # Load billing data
-        billing_file = os.path.join(folder_path, 'billing_download_20241228.json')
-        logger.info(f"Using Knack billing data from: billing_download_20241228.json")
-        with open(billing_file, 'r') as f:
-            raw_billing_data = json.load(f)
-            
-        # Convert billing data to our format
-        billing_data = []
-        for invoice in raw_billing_data:
-            try:
-                # Extract amount from field_1411 (total amount)
-                amount = float(invoice.get('field_1411_raw', 0))
-                
-                # Extract payee from field_1350 (removing HTML tags)
-                raw_payee = invoice.get('field_1350', '')
-                payee = re.sub(r'<[^>]+>', '', raw_payee)
-                
-                # Extract resident name from field_1350_raw
-                resident_name = ''
-                if invoice.get('field_1350_raw'):
-                    raw_data = invoice['field_1350_raw']
-                    if isinstance(raw_data, list) and len(raw_data) > 0:
-                        resident_name = raw_data[0].get('identifier', '')
-                
-                # Get invoice date from field_1351
-                invoice_date = invoice.get('field_1351', '')
-                if not invoice_date and invoice.get('field_1351_raw'):
-                    invoice_date = invoice['field_1351_raw'].get('date', '')
-                
-                # Get invoice number from field_1418
-                invoice_number = invoice.get('field_1418', '')
-                
-                billing_data.append({
-                    'invoice_number': invoice_number,
-                    'amount': f"${amount:,.2f}",
-                    'date': invoice_date,
-                    'payee': payee,
-                    'resident_name': resident_name,
-                    'raw_payee': raw_payee
-                })
-            except (ValueError, KeyError) as e:
-                logger.warning(f"Error processing invoice {invoice.get('field_1418', 'N/A')}: {str(e)}")
-                continue
+        # Verify PNG was created
+        if os.path.exists(png_path):
+            print(f"PNG file created successfully: {png_path}")
+            print(f"PNG file size: {os.path.getsize(png_path)} bytes")
+        else:
+            print(f"WARNING: PNG file was not created at {png_path}")
         
-        # Save parsed data for debugging
-        debug_file = os.path.join(folder_path, 'parsed_data_debug.json')
-        with open(debug_file, 'w') as f:
-            json.dump({
-                'check_data': check_data,
-                'invoice_data': billing_data
-            }, f, indent=2)
-        logger.info(f"Saved parsed data for debugging to: {debug_file}")
-        
-        # Load bank statement data
-        bank_file = os.path.join(folder_path, 'stmt.csv')
-        logger.info(f"Using bank data from: stmt.csv")
-        
-        # Match checks with invoices
-        logger.info("Starting match with Python logic...")
-        try:
-            matches, unmatched_checks, unmatched_invoices = match_checks_with_invoices(check_data, billing_data)
-            
-            # Save matches for review
-            matches_file = os.path.join(folder_path, 'matches.json')
-            with open(matches_file, 'w') as f:
-                json.dump({
-                    'matched_payments': matches,
-                    'unmatched_checks': unmatched_checks,
-                    'unmatched_invoices': unmatched_invoices
-                }, f, indent=2)
-            logger.info(f"Saved matches to: {matches_file}")
-            
-            return matches
-            
-        except Exception as e:
-            logger.error(f"Error matching checks with invoices: {str(e)}")
-            raise
-        
-    except Exception as e:
-        logger.error(f"Error processing input folder: {str(e)}")
-        raise
+        # Analyze check with consensus
+        check_info = await analyze_check_with_consensus(pdf_path)
+        if check_info:
+            # Add file paths to check info
+            check_info['pdf_path'] = pdf_path
+            check_info['png_path'] = png_path
+            print(f"Added to check data with paths:")
+            print(f"  PDF: {check_info['pdf_path']}")
+            print(f"  PNG: {check_info['png_path']}")
+            check_data.append(check_info)
+    
+    return check_data
 
 async def main():
     """Main function to process payments"""

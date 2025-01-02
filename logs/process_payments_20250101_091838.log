@@ -1,0 +1,16 @@
+2025-01-01 09:18:38,549 - INFO - Detailed logs will be written to: c:\code\KnackBillingMatch\logs\process_payments_20250101_091838.log
+2025-01-01 09:18:48,915 - INFO - Processing check: 44.pdf
+2025-01-01 09:18:49,159 - INFO - Saved check image as PNG: C:/Users/aaron/Downloads/payment_matching_20241228\44.png
+2025-01-01 09:18:49,160 - INFO - Attempt 1 analyzing check: 44.pdf
+2025-01-01 09:18:53,866 - INFO - Attempt 2 analyzing check: 44.pdf
+2025-01-01 09:18:55,284 - INFO - All attempts returned identical results
+2025-01-01 09:18:55,284 - INFO - Processing check: 45.pdf
+2025-01-01 09:18:55,512 - INFO - Saved check image as PNG: C:/Users/aaron/Downloads/payment_matching_20241228\45.png
+2025-01-01 09:18:55,513 - INFO - Attempt 1 analyzing check: 45.pdf
+2025-01-01 09:18:58,067 - INFO - Attempt 2 analyzing check: 45.pdf
+2025-01-01 09:18:59,564 - INFO - Results differ, trying two more times
+2025-01-01 09:18:59,564 - INFO - Additional attempt 1 analyzing check: 45.pdf
+2025-01-01 09:19:01,047 - INFO - Additional attempt 2 analyzing check: 45.pdf
+2025-01-01 09:19:02,555 - INFO - Generated consensus from multiple attempts
+2025-01-01 09:19:02,555 - INFO - Using Knack billing data from: billing_download_20241228.json
+2025-01-01 09:19:02,555 - ERROR - Error processing input folder: [Errno 2] No such file or directory: 'C:/Users/aaron/Downloads/payment_matching_20241228\\billing_download_20241228.json'

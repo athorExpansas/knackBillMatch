@@ -1,0 +1,2 @@
+2025-01-01 09:17:54,658 - INFO - Detailed logs will be written to: c:\code\KnackBillingMatch\logs\process_payments_20250101_091754.log
+2025-01-01 09:18:05,251 - ERROR - Error matching checks with invoices: 'coroutine' object is not iterable

@@ -1,0 +1,18 @@
+2025-01-01 09:47:16,789 - INFO - Detailed logs will be written to: c:\code\KnackBillingMatch\logs\process_payments_20250101_094716.log
+2025-01-01 09:47:26,037 - INFO - Processing check: 44.pdf
+2025-01-01 09:47:26,301 - INFO - Saved check image as PNG: C:/Users/aaron/Downloads/payment_matching_20241228\44.png
+2025-01-01 09:47:26,303 - INFO - Attempt 1 analyzing check: 44.pdf
+2025-01-01 09:47:31,006 - INFO - Attempt 2 analyzing check: 44.pdf
+2025-01-01 09:47:32,461 - INFO - Results differ, trying two more times
+2025-01-01 09:47:32,461 - INFO - Additional attempt 1 analyzing check: 44.pdf
+2025-01-01 09:47:33,861 - INFO - Additional attempt 2 analyzing check: 44.pdf
+2025-01-01 09:47:35,283 - INFO - Generated consensus from multiple attempts
+2025-01-01 09:47:35,283 - INFO - Processing check: 45.pdf
+2025-01-01 09:47:35,535 - INFO - Saved check image as PNG: C:/Users/aaron/Downloads/payment_matching_20241228\45.png
+2025-01-01 09:47:35,537 - INFO - Attempt 1 analyzing check: 45.pdf
+2025-01-01 09:47:38,066 - INFO - Attempt 2 analyzing check: 45.pdf
+2025-01-01 09:47:39,549 - INFO - Results differ, trying two more times
+2025-01-01 09:47:39,549 - INFO - Additional attempt 1 analyzing check: 45.pdf
+2025-01-01 09:47:41,063 - INFO - Additional attempt 2 analyzing check: 45.pdf
+2025-01-01 09:47:42,552 - INFO - Generated consensus from multiple attempts
+2025-01-01 09:47:42,553 - ERROR - Error matching checks with invoices: 'amount'

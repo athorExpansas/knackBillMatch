@@ -98,6 +98,49 @@ Match Threshold: 0.70 (70% confidence)
 - Punctuation normalization
 - Word order independence
 
+### 5. Matching GUI (`matching_gui.py`)
+
+The GUI interface for reviewing and confirming matches:
+
+```
+MatchingGUI/
+├── Check Display
+│   ├── Responsive Image Scaling
+│   └── High-Resolution Rendering
+├── Match List
+│   ├── Confidence Scores
+│   ├── Amount Display
+│   └── Date Information
+└── Action Buttons
+    ├── Confirm Match
+    ├── Skip Check
+    └── Navigation
+```
+
+Key Features:
+- PyQt5-based interface for reliable image handling
+- Responsive check image display that scales with window size
+- High-quality image rendering with aspect ratio preservation
+- Auto-selection of highest confidence matches
+- Detailed match information display
+- Intuitive navigation between checks
+
+#### GUI Components:
+```python
+class MatchingGUI(QMainWindow):
+    - Image Display (QLabel with dynamic scaling)
+    - Match Tree (QTreeWidget)
+    - Navigation Controls
+    - Match Confirmation
+```
+
+#### Image Handling:
+- OpenCV for initial image loading
+- QImage/QPixmap for display
+- Smooth scaling with Qt.SmoothTransformation
+- Aspect ratio preservation
+- Dynamic resizing support
+
 ## File Structure
 
 ```
@@ -105,7 +148,7 @@ KnackBillingMatch/
 ├── scripts/
 │   ├── process_payments_llama.py  # Main processing script
 │   ├── process_payments.py        # Legacy processing
-│   └── test_matching.py          # Test suite
+│   └── Tests and other clients/          # Test suite
 ├── src/
 │   └── llama_client.py           # Llama API client
 ├── logs/                         # Detailed processing logs
